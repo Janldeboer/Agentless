@@ -1,12 +1,15 @@
 import time
-from typing import Dict, Union
+import threading
+import re
+import os
+from typing import Dict, Union, Optional
 
 import anthropic
 import openai
 import tiktoken
 
 
-def num_tokens_from_messages(message, model="gpt-3.5-turbo-0301"):
+def num_tokens_from_messages(message, model="gpt-5-mini-2025-08-07"):
     """Returns the number of tokens used by a list of messages."""
     try:
         encoding = tiktoken.encoding_for_model(model)
@@ -26,21 +29,21 @@ def create_chatgpt_config(
     temperature: float = 1,
     batch_size: int = 1,
     system_message: str = "You are a helpful assistant.",
-    model: str = "gpt-3.5-turbo",
+    model: str = "gpt-5-mini-2025-08-07",
 ) -> Dict:
     if isinstance(message, list):
         config = {
             "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
+            "max_completion_tokens": max_tokens,
+            #"temperature": temperature,
             "n": batch_size,
             "messages": [{"role": "system", "content": system_message}] + message,
         }
     else:
         config = {
             "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
+            "max_completion_tokens": max_tokens,
+            #"temperature": temperature,
             "n": batch_size,
             "messages": [
                 {"role": "system", "content": system_message},
@@ -63,6 +66,8 @@ def request_chatgpt_engine(config, logger, base_url=None, max_retries=40, timeou
 
     while ret is None and retries < max_retries:
         try:
+            # Respect a minimal cooldown between OpenAI requests to avoid 429s
+            _sleep_if_needed_for_openai_cooldown(logger)
             # Attempt to get the completion
             logger.info("Creating API request")
 
@@ -79,7 +84,11 @@ def request_chatgpt_engine(config, logger, base_url=None, max_retries=40, timeou
                 logger.info("Rate limit exceeded. Waiting...")
                 print(e)
                 logger.info(e)
-                time.sleep(5)
+                # If the server suggests a wait time (e.g. "Please try again in 1.384s"), respect it
+                retry_after = _extract_retry_after_seconds(e)
+                if retry_after is None:
+                    retry_after = 2.0  # sensible default backoff
+                time.sleep(retry_after)
             elif isinstance(e, openai.APIConnectionError):
                 print("API connection error. Waiting...")
                 logger.info("API connection error. Waiting...")
@@ -106,7 +115,7 @@ def create_anthropic_config(
     batch_size: int = 1,
     system_message: str = "You are a helpful assistant.",
     model: str = "claude-2.1",
-    tools: list = None,
+    tools: Optional[list] = None,
 ) -> Dict:
     if isinstance(message, list):
         config = {
@@ -140,15 +149,23 @@ def request_anthropic_engine(
     client = anthropic.Anthropic()
 
     while ret is None and retries < max_retries:
+        # ensure start_time is always defined for linter correctness
+        start_time = time.time()
         try:
-            start_time = time.time()
             if prompt_cache:
                 # following best practice to cache mainly the reused content at the beginning
                 # this includes any tools, system messages (which is already handled since we try to cache the first message)
                 config["messages"][0]["content"][0]["cache_control"] = {
                     "type": "ephemeral"
                 }
-                ret = client.beta.prompt_caching.messages.create(**config)
+                # Access beta.prompt_caching via getattr to avoid attribute errors in older SDKs
+                beta = getattr(client, "beta", None)
+                prompt_caching = getattr(beta, "prompt_caching", None) if beta else None
+                if prompt_caching and hasattr(prompt_caching, "messages"):
+                    ret = prompt_caching.messages.create(**config)
+                else:
+                    # Fallback to regular messages.create if prompt caching is unavailable
+                    ret = client.messages.create(**config)
             else:
                 ret = client.messages.create(**config)
         except Exception as e:
@@ -162,3 +179,69 @@ def request_anthropic_engine(
         retries += 1
 
     return ret
+
+
+# --- Simple, process-wide OpenAI cooldown (thread-safe) ---
+# Allow overriding via env var OPENAI_MIN_COOLDOWN_SEC (seconds)
+try:
+    _OPENAI_COOLDOWN_SEC = float(os.getenv("OPENAI_MIN_COOLDOWN_SEC", "1.0"))
+except Exception:
+    _OPENAI_COOLDOWN_SEC = 1.0
+_last_openai_request_ts = 0.0
+_openai_ts_lock = threading.Lock()
+
+
+def _sleep_if_needed_for_openai_cooldown(logger=None):
+    """Ensure at least _OPENAI_COOLDOWN_SEC between OpenAI requests.
+
+    This provides a coarse-grained throttle to avoid spiky 429s.
+    It spaces the start-time of requests by the configured cooldown.
+    """
+    global _last_openai_request_ts
+    with _openai_ts_lock:
+        now = time.time()
+        wait = _OPENAI_COOLDOWN_SEC - (now - _last_openai_request_ts)
+        if wait > 0:
+            if logger:
+                try:
+                    logger.info(f"Respecting OpenAI cooldown: sleeping {wait:.2f}s")
+                except Exception:
+                    pass
+            time.sleep(wait)
+        # mark the start time of this request
+        _last_openai_request_ts = time.time()
+
+
+def _extract_retry_after_seconds(e: Exception):
+    """Try to extract server-suggested retry-after seconds from an OpenAI error.
+
+    Looks for patterns like "Please try again in 1.384s" in the message,
+    and also checks a 'retry-after' header if available on the response.
+    Returns a float seconds value or None.
+    """
+    # Try response headers if present
+    try:
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            headers = getattr(resp, "headers", None)
+            if headers:
+                retry_after = headers.get("retry-after") or headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        return float(retry_after)
+                    except ValueError:
+                        # Some servers may return a date; ignore in that case
+                        pass
+    except Exception:
+        pass
+
+    # Fallback: parse from the stringified message
+    try:
+        msg = str(e)
+        m = re.search(r"try again in ([0-9]*\.?[0-9]+)s", msg, re.IGNORECASE)
+        if m:
+            return float(m.group(1))
+    except Exception:
+        pass
+
+    return None
