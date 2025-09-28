@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 from agentless.repair.repair import construct_topn_file_context
 from agentless.util.compress_file import get_skeleton
@@ -21,7 +22,7 @@ class FL(ABC):
         self.problem_statement = problem_statement
 
     @abstractmethod
-    def localize(self, top_n=1, mock=False) -> tuple[list, list, list, any]:
+    def localize(self, top_n=1, mock=False) -> tuple[list, dict, dict]:
         pass
 
 
@@ -240,8 +241,24 @@ Return just the locations wrapped with ```.
         self.logger = logger
 
     def _parse_model_return_lines(self, content: str) -> list[str]:
-        if content:
-            return content.strip().split("\n")
+        """Parse model output into a clean list of lines.
+
+        - Returns an empty list if content is None/empty to avoid NoneType errors.
+        - If the output uses code fences (```), extract the blocks first.
+        - Strips whitespace and ignores empty lines and fence markers.
+        """
+        if not content:
+            return []
+
+        # Prefer content inside code fences if provided
+        blocks = extract_code_blocks(content)
+        content_to_parse = "\n".join(blocks) if blocks else content
+
+        # Split and clean lines
+        lines = [ln.strip() for ln in content_to_parse.strip().splitlines()]
+        # Filter out code fence markers and empties
+        lines = [ln for ln in lines if ln and not ln.startswith("```")]
+        return lines
 
     def localize_irrelevant(self, top_n=1, mock=False):
         from agentless.util.api_requests import num_tokens_from_messages
@@ -259,7 +276,7 @@ Return just the locations wrapped with ```.
             traj = {
                 "prompt": message,
                 "usage": {
-                    "prompt_tokens": num_tokens_from_messages(message, self.model),
+                    "prompt_tokens": num_tokens_from_messages(message, self.model_name),
                 },
             }
             return [], {"raw_output_loc": ""}, traj
@@ -310,7 +327,7 @@ Return just the locations wrapped with ```.
             traj,
         )
 
-    def localize(self, top_n=1, mock=False) -> tuple[list, list, list, any]:
+    def localize(self, top_n=1, mock=False) -> tuple[list, dict, dict]:
         from agentless.util.api_requests import num_tokens_from_messages
         from agentless.util.model import make_model
 
