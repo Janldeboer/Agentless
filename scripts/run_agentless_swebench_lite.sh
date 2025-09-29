@@ -157,6 +157,29 @@ run() {
   "$@"
 }
 
+# Ensure Docker daemon is reachable for test steps (SWE-bench harness runs in containers)
+check_docker() {
+  python - <<'PY'
+import sys
+try:
+    import docker
+    client = docker.from_env()
+    client.ping()
+    print("[INFO] Docker daemon reachable.")
+except Exception as e:
+    print("[ERROR] Docker daemon not reachable via docker.from_env():", e)
+    sys.exit(1)
+PY
+  if [[ $? -ne 0 ]]; then
+    echo "" >&2
+    echo "Troubleshooting (macOS):" >&2
+    echo "  - If using Docker Desktop: open the app and ensure it’s running (whale icon)." >&2
+    echo "  - If using Colima: run 'colima start' and export env with 'eval \"$(colima env)\"' or set DOCKER_HOST=unix://$HOME/.colima/default/docker.sock" >&2
+    echo "  - Verify 'docker info' works in this shell." >&2
+    exit 1
+  fi
+}
+
 # Paths used across steps
 FILE_LEVEL_DIR="${RESULTS_DIR}/file_level"
 IRRELEVANT_DIR="${RESULTS_DIR}/file_level_irrelevant"
@@ -283,6 +306,7 @@ done
 # 5) Patch validation: Regression tests (selection + run)
 ######################################################
 info "Step 5.1: List passing tests in original codebase"
+check_docker
 run python agentless/test/run_regression_tests.py \
   --run_id generate_regression_tests \
   --output_file "${RESULTS_DIR}/passing_tests.jsonl" \
@@ -297,6 +321,7 @@ run python agentless/test/select_regression_tests.py \
   ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 5.3: Run selected regression tests against each candidate patch"
+check_docker
 for num in $(seq 0 $((REPAIR_SAMPLES-1))); do
   for sample in $(seq 1 ${EDIT_LOC_SAMPLES}); do
     folder="${RESULTS_DIR}/repair_sample_${sample}"
@@ -323,6 +348,7 @@ run python agentless/test/generate_reproduction_tests.py \
   ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 6.2: Execute generated reproduction tests on original repo (sequential)"
+check_docker
 for num in $(seq 0 $((REPRO_SAMPLES-1))); do
   run python agentless/test/run_reproduction_tests.py \
     --run_id="reproduction_test_generation_filter_sample_${num}" \
@@ -343,6 +369,7 @@ run python agentless/test/generate_reproduction_tests.py \
   ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 6.4: Run selected reproduction tests against each candidate patch"
+check_docker
 for num in $(seq 0 $((REPAIR_SAMPLES-1))); do
   for sample in $(seq 1 ${EDIT_LOC_SAMPLES}); do
     folder="${RESULTS_DIR}/repair_sample_${sample}"
