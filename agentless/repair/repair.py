@@ -178,6 +178,7 @@ def _post_process_multifile_repair(
     for edited_file_key in file_to_commands:
         edited_file = ""
         new_content = ""
+        content = ""
         try:
             logger.info(f"=== edited_file: {edited_file_key} ===")
             edit_commands = file_to_commands[edited_file_key]
@@ -426,8 +427,9 @@ def process_loc(loc, args, swe_bench_data, prev_o, write_lock=None):
                 },
             }
         else:
-            if args.str_replace_format:
-                greedy_traj = model.codegen_w_tool(
+            # Prefer tool-enabled generation if available, otherwise fall back
+            if args.str_replace_format and hasattr(model, "codegen_w_tool"):
+                greedy_traj = getattr(model, "codegen_w_tool")(
                     message, num_samples=1, prompt_cache=args.max_samples > 1
                 )[0]
             else:
@@ -464,8 +466,8 @@ def process_loc(loc, args, swe_bench_data, prev_o, write_lock=None):
     else:
         if args.max_samples - 1:
             # always use cached prompt if possible for later samples
-            if args.str_replace_format:
-                sample_trajs = model.codegen_w_tool(
+            if args.str_replace_format and hasattr(model, "codegen_w_tool"):
+                sample_trajs = getattr(model, "codegen_w_tool")(
                     message, num_samples=args.max_samples - 1, prompt_cache=True
                 )
             else:
@@ -585,7 +587,7 @@ def post_process_raw_output(
 
         git_diff = fake_git_repo("playground", edited_files, contents, new_contents)
 
-        raw_git_diffs += "\n" + git_diff.replace("\ No newline at end of file\n", "")
+        raw_git_diffs += "\n" + git_diff.replace("\\ No newline at end of file\n", "")
 
         syntax_success = check_syntax(new_contents)
 
@@ -617,7 +619,14 @@ def post_process_repair(args):
         log_file = os.path.join(args.output_folder, "repair_logs", f"{instance_id}.log")
         logger = setup_logger(log_file)
 
-        if raw_output["raw_output"] == "":
+        # Default values to avoid unbound variables
+        raw_output_text = ""
+        file_contents = {}
+        file_loc_intervals = {}
+
+        # If no raw output was generated (string or list of empty strings), write empty patch and continue
+        ro_val = raw_output.get("raw_output", "")
+        if ro_val == "" or (isinstance(ro_val, list) and all(not x for x in ro_val)):
             with open(args.output_file, "a") as f:
                 f.write(
                     json.dumps(
@@ -629,69 +638,77 @@ def post_process_repair(args):
                     )
                     + "\n"
                 )
+            cleanup_logger(logger)
             continue
 
         if args.select_id == -1:
-            # Use the last generation
+            # Use the last generation (not implemented in original code)
             assert False, "not implemented for now"
         else:
             # Use the indexed generation
             generation_idx = args.select_id
             try:
-                raw_output_text = raw_output["all_generations"][0][generation_idx]
-                original_file_content = raw_output["prev_content"][0][generation_idx]
-                pred_file = raw_output["file_names"][0][generation_idx]
+                gens = raw_output.get("all_generations", [])
+                prevs = raw_output.get("prev_content", [])
+                names = raw_output.get("file_names", [])
 
-                pred_files = [loc for loc in locs if loc["instance_id"] == instance_id][
-                    0
-                ]["found_files"][: args.top_n]
+                # Handle structure: lists wrapped one level deep (e.g., [list])
+                gens0 = gens[0] if (isinstance(gens, list) and gens and isinstance(gens[0], list)) else (gens if isinstance(gens, list) else [])
+                prevs0 = prevs[0] if (isinstance(prevs, list) and prevs and isinstance(prevs[0], list)) else (prevs if isinstance(prevs, list) else [])
+                names0 = names[0] if (isinstance(names, list) and names and isinstance(names[0], list)) else (names if isinstance(names, list) else [])
 
-                git_diffs = ""
-                raw_git_diffs = ""
-                if isinstance(raw_output["raw_output"], str):
-                    # for backward compatibility
-                    raw_output["raw_output"] = [raw_output["raw_output"]]
+                if gens0 and 0 <= generation_idx < len(gens0):
+                    raw_output_text = gens0[generation_idx]
+                    original_file_content = prevs0[generation_idx] if generation_idx < len(prevs0) else []
+                    pred_file = names0[generation_idx] if generation_idx < len(names0) else []
+                else:
+                    logger.info(
+                        f"No generation at index {generation_idx} for {instance_id}; skipping."
+                    )
+                    raw_output_text = ""
+                    original_file_content = []
+                    pred_file = []
 
+                pred_files = [loc for loc in locs if loc["instance_id"] == instance_id][0]["found_files"][: args.top_n]
+
+                # Normalize shapes
+                if isinstance(ro_val, str):
+                    raw_output["raw_output"] = [ro_val]
                 if isinstance(original_file_content, str):
                     original_file_content = [original_file_content]
+                    pred_file = [pred_file]
+                if isinstance(pred_file, str):
                     pred_file = [pred_file]
 
                 file_contents = {
                     file_name: o_file_content
-                    for file_name, o_file_content in zip(
-                        pred_file, original_file_content
-                    )
+                    for file_name, o_file_content in zip(pred_file, original_file_content)
                 }
 
-                file_loc_intervals = dict()
-
-                loc = [loc for loc in locs if loc["instance_id"] == instance_id][0]
-
+                # Build file_loc_intervals per predicted file
+                loc_entry = [loc for loc in locs if loc["instance_id"] == instance_id][0]
+                file_loc_intervals = {}
                 for i, tmp_pred_file in enumerate(pred_files):
-                    if tmp_pred_file not in pred_file:
-                        continue
                     if (
-                        "found_edit_locs" in loc
-                        and tmp_pred_file in loc["found_edit_locs"]
+                        "found_edit_locs" in loc_entry
+                        and tmp_pred_file in loc_entry["found_edit_locs"]
+                        and tmp_pred_file in file_contents
                     ):
-                        line_locs, context_intervals = transfer_arb_locs_to_locs(
-                            loc["found_edit_locs"][tmp_pred_file],
+                        _, context_intervals = transfer_arb_locs_to_locs(
+                            loc_entry["found_edit_locs"][tmp_pred_file],
                             None,
-                            loc["found_files"][i],
+                            loc_entry["found_files"][i],
                             args.context_window,
                             args.loc_interval,
                             args.fine_grain_loc_only,
-                            file_content=file_contents[tmp_pred_file]
-                            if tmp_pred_file in file_contents
-                            else "",
+                            file_content=file_contents[tmp_pred_file],
                         )
                     else:
-                        line_locs, context_intervals = [], []  # default values.
-
+                        context_intervals = []
                     file_loc_intervals[tmp_pred_file] = context_intervals
             except Exception as e:
-                logger.info(e)
-                print(e)
+                # Log internally; avoid noisy stdout prints.
+                logger.info(f"Post-process selection error for {instance_id}: {e}")
                 raw_output_text = ""
 
         if raw_output_text:
