@@ -67,7 +67,9 @@ def main():
     args = parser.parse_args()
 
     args.output_file = os.path.join(args.output_folder, args.output_file)
-    assert not os.path.exists(args.output_file), "Output file already exists"
+    if os.path.exists(args.output_file):
+        print(f"Output file {args.output_file} already exists. Skipping this step.")
+        return
 
     os.makedirs(args.output_folder, exist_ok=True)
 
