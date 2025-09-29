@@ -173,7 +173,6 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-4o-2024-05-13",
         default="gpt-5-nano-2025-08-07",
         choices=[
             "gpt-5-2025-08-07",
