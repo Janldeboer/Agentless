@@ -139,9 +139,12 @@ fi
 mkdir -p "${RESULTS_DIR}" "${PERSIST_DIR}"
 
 DATASET_FLAG=("--dataset=${DATASET}")
-TARGET_FLAG=()
+TARGET_ID_FLAG=()
+TARGET_INSTANCE_FLAG=()
 if [[ -n "${TARGET_ID}" ]]; then
-  TARGET_FLAG=("--target_id=${TARGET_ID}")
+  # Many scripts accept --target_id (single), but test runners expect --instance_ids (variadic)
+  TARGET_ID_FLAG=("--target_id=${TARGET_ID}")
+  TARGET_INSTANCE_FLAG=("--instance_ids" "${TARGET_ID}")
 fi
 SKIP_FLAG=()
 if [[ ${SKIP_EXISTING} -eq 1 ]]; then
@@ -179,7 +182,7 @@ run python agentless/fl/localize.py \
   --num_threads "${THREADS}" \
   ${SKIP_FLAG[@]+"${SKIP_FLAG[@]}"} \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-  ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 1.2: Identify irrelevant folders"
 run python agentless/fl/localize.py \
@@ -189,7 +192,7 @@ run python agentless/fl/localize.py \
   --num_threads "${THREADS}" \
   ${SKIP_FLAG[@]+"${SKIP_FLAG[@]}"} \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-  ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 1.3: Retrieve additional suspicious files via embeddings"
 run python agentless/fl/retrieve.py \
@@ -200,7 +203,7 @@ run python agentless/fl/retrieve.py \
   --persist_dir "${PERSIST_DIR}" \
   --num_threads "${THREADS}" \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-  ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 1.4: Combine retrieved + LLM-predicted files"
 run python agentless/fl/combine.py \
@@ -223,7 +226,7 @@ run python agentless/fl/localize.py \
   --num_threads "${THREADS}" \
   ${SKIP_FLAG[@]+"${SKIP_FLAG[@]}"} \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-  ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 #############################################
 # 3) Localize to fine-grained edit locations
@@ -240,7 +243,7 @@ run python agentless/fl/localize.py \
   --num_threads "${THREADS}" \
   ${SKIP_FLAG[@]+"${SKIP_FLAG[@]}"} \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-  ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 3.2: Merge edit location samples into individual sets"
 run python agentless/fl/localize.py \
@@ -273,7 +276,7 @@ for ((i=0; i<EDIT_LOC_SAMPLES; i++)); do
     --gen_and_process \
     --num_threads "${REPAIR_THREADS}" \
     ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-    ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+    ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 done
 
 ######################################################
@@ -284,14 +287,14 @@ run python agentless/test/run_regression_tests.py \
   --run_id generate_regression_tests \
   --output_file "${RESULTS_DIR}/passing_tests.jsonl" \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-  ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ${TARGET_INSTANCE_FLAG[@]+"${TARGET_INSTANCE_FLAG[@]}"}
 
 info "Step 5.2: LLM-assisted selection of regression tests"
 run python agentless/test/select_regression_tests.py \
   --passing_tests "${RESULTS_DIR}/passing_tests.jsonl" \
   --output_folder "${RESULTS_DIR}/select_regression" \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-  ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 5.3: Run selected regression tests against each candidate patch"
 for num in $(seq 0 $((REPAIR_SAMPLES-1))); do
@@ -304,7 +307,7 @@ for num in $(seq 0 $((REPAIR_SAMPLES-1))); do
       --run_id="${run_id_prefix}_regression_${num}" \
       --num_workers "${THREADS}" \
       ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-      ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+      ${TARGET_INSTANCE_FLAG[@]+"${TARGET_INSTANCE_FLAG[@]}"}
   done
 done
 
@@ -317,7 +320,7 @@ run python agentless/test/generate_reproduction_tests.py \
   --output_folder "${RESULTS_DIR}/reproduction_test_samples" \
   --num_threads "${THREADS}" \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-  ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 6.2: Execute generated reproduction tests on original repo (sequential)"
 for num in $(seq 0 $((REPRO_SAMPLES-1))); do
@@ -327,7 +330,7 @@ for num in $(seq 0 $((REPRO_SAMPLES-1))); do
     --num_workers "${THREADS}" \
     --testing \
     ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-    ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+    ${TARGET_INSTANCE_FLAG[@]+"${TARGET_INSTANCE_FLAG[@]}"}
 done
 
 info "Step 6.3: Majority vote selection of reproduction tests"
@@ -337,7 +340,7 @@ run python agentless/test/generate_reproduction_tests.py \
   --output_file reproduction_tests.jsonl \
   --select \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-  ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
 info "Step 6.4: Run selected reproduction tests against each candidate patch"
 for num in $(seq 0 $((REPAIR_SAMPLES-1))); do
@@ -350,7 +353,7 @@ for num in $(seq 0 $((REPAIR_SAMPLES-1))); do
       --run_id="${run_id_prefix}_reproduction_${num}" \
       --num_workers "${THREADS}" \
       ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
-      ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+      ${TARGET_INSTANCE_FLAG[@]+"${TARGET_INSTANCE_FLAG[@]}"}
   done
 done
 
