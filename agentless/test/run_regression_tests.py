@@ -31,17 +31,29 @@ def rewrite_report(instance_id, input_folder_path, regression_tests):
     return report["PASS_TO_PASS"]["failure"]
 
 
-def save_passing_tests(output_jsonl_path, input_folder_path, dataset):
-    ds = load_dataset(dataset)
+def save_passing_tests(output_jsonl_path, input_folder_path, dataset, instance_ids=None):
+    """Write tests that pass in the original repo for the given instance_ids.
+
+    If instance_ids is None, infer instance IDs from existing logs in input_folder_path/test.
+    """
+    if instance_ids is None:
+        test_dir = os.path.join(input_folder_path, "test")
+        ids_to_process = []
+        if os.path.isdir(test_dir):
+            for name in os.listdir(test_dir):
+                log_path = os.path.join(test_dir, name, "test_output.txt")
+                if os.path.isfile(log_path):
+                    ids_to_process.append(name)
+    else:
+        ids_to_process = list(instance_ids)
 
     with jsonlines.open(output_jsonl_path, mode="w") as writer:
-        for entry in ds["test"]:
-            instance_id = entry["instance_id"]
+        for instance_id in ids_to_process:
 
             log_path = f"{input_folder_path}/test/{instance_id}/test_output.txt"
             try:
                 # obtain the list of tests that were ran
-                eval_sm, found = get_logs_eval(log_path)
+                eval_sm, found = get_logs_eval(log_path)  # type: ignore
             except FileNotFoundError:
                 print(f"File not found: {log_path}")
                 continue
@@ -107,8 +119,8 @@ def check_if_all_instances_pass(instance_to_plausible):
 def _run_regression(args):
     if args.predictions_path == "gold":
         ds = load_dataset(args.dataset)
-        instance_ids = ds["test"]["instance_id"]
-        patches = ds["test"]["patch"]
+        instance_ids = [entry["instance_id"] for entry in ds["test"]]  # type: ignore
+        patches = [entry["patch"] for entry in ds["test"]]  # type: ignore
 
         instance_to_plausible = run_tests(
             instance_ids,
@@ -176,7 +188,7 @@ def _run_regression(args):
         # We can fix this by checking if a test file exists in the base repo.
         ds = load_dataset(args.dataset)
         instance_ids = (
-            ds["test"]["instance_id"]
+            [entry["instance_id"] for entry in ds["test"]]  # type: ignore
             if args.instance_ids is None
             else args.instance_ids
         )
@@ -209,6 +221,7 @@ def _run_regression(args):
                 args.output_file,
                 os.path.join("logs", "run_evaluation", args.run_id),
                 args.dataset,
+                args.instance_ids,
             )
 
 

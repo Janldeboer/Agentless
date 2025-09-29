@@ -120,7 +120,7 @@ def select_test(instance_id, args, swe_bench_data, prev_o, passing_tests):
     subset_regression_tests = []
 
     for x in passing_tests:
-        if x not in model_identified_tests:
+        if not model_identified_tests or x not in model_identified_tests:
             subset_regression_tests.append(x)
 
     with open(args.output_file, "a") as f:
@@ -151,19 +151,27 @@ def select_tests(args):
             instance_test_dict[instance_id] = test
 
     swe_bench_data = load_dataset(args.dataset, split="test")
-    instance_ids = (
-        swe_bench_data["instance_id"]
-        if args.instance_ids is None
-        else args.instance_ids
-    )
+    # Determine which instance_ids to run:
+    # - If explicit --instance_ids provided, use them (but only those present in passing_tests file).
+    # - Else if --target_id provided, use that if present in passing_tests file.
+    # - Else, default to all IDs present in passing_tests file.
+    if args.instance_ids is not None and len(args.instance_ids) > 0:
+        candidate_ids = args.instance_ids
+    elif getattr(args, "target_id", None):
+        candidate_ids = [args.target_id]
+    else:
+        candidate_ids = list(instance_test_dict.keys())
+
+    # Filter to only IDs that exist in passing_tests (to avoid KeyError) and in dataset
+    dataset_ids = set(swe_bench_data["instance_id"])  # type: ignore
+    instance_ids = [iid for iid in candidate_ids if iid in instance_test_dict and iid in dataset_ids]
     prev_o = load_jsonl(args.output_file) if os.path.exists(args.output_file) else []
 
     results = []
 
     for instance_id in tqdm(instance_ids, total=len(instance_ids), colour="MAGENTA"):
-        result = select_test(
-            instance_id, args, swe_bench_data, prev_o, instance_test_dict[instance_id]
-        )
+        passing_tests = instance_test_dict.get(instance_id, [])
+        result = select_test(instance_id, args, swe_bench_data, prev_o, passing_tests)
         if result is not None:
             results.append(result)
 
