@@ -143,11 +143,23 @@ def make_reproduction_sec(instance: SWEbenchInstance) -> TestSpec:
     eval_script_list = make_reproduction_script_list(
         instance, specs, env_name, repo_directory, base_commit, production_test
     )
-    if platform.machine() in {"aarch64", "arm64"}:
-        # use arm64 unless explicitly specified
-        arch = "arm64" if instance_id not in USE_X86 else "x86_64"
+    # Allow forcing architecture via environment variable
+    arch_env = os.getenv("SWE_BENCH_ARCH") or os.getenv("SWEBENCH_ARCH")
+    if arch_env:
+        arch_env_norm = arch_env.lower()
+        if arch_env_norm in {"x86_64", "amd64", "linux/amd64", "x86"}:
+            arch = "x86_64"
+        elif arch_env_norm in {"arm64", "aarch64", "linux/arm64", "arm"}:
+            arch = "arm64"
+        else:
+            # Fallback to auto-detect if an unknown value is provided
+            arch = "arm64" if platform.machine() in {"aarch64", "arm64"} else "x86_64"
     else:
-        arch = "x86_64"
+        if platform.machine() in {"aarch64", "arm64"}:
+            # use arm64 unless explicitly specified
+            arch = "arm64" if instance_id not in USE_X86 else "x86_64"
+        else:
+            arch = "x86_64"
 
     return TestSpec(
         instance_id=instance_id,
@@ -236,11 +248,23 @@ def make_regression_spec(instance: SWEbenchInstance) -> TestSpec:
     eval_script_list = make_regression_script_list(
         instance, specs, env_name, repo_directory, base_commit
     )
-    if platform.machine() in {"aarch64", "arm64"}:
-        # use arm64 unless explicitly specified
-        arch = "arm64" if instance_id not in USE_X86 else "x86_64"
+    # Allow forcing architecture via environment variable
+    arch_env = os.getenv("SWE_BENCH_ARCH") or os.getenv("SWEBENCH_ARCH")
+    if arch_env:
+        arch_env_norm = arch_env.lower()
+        if arch_env_norm in {"x86_64", "amd64", "linux/amd64", "x86"}:
+            arch = "x86_64"
+        elif arch_env_norm in {"arm64", "aarch64", "linux/arm64", "arm"}:
+            arch = "arm64"
+        else:
+            # Fallback to auto-detect if an unknown value is provided
+            arch = "arm64" if platform.machine() in {"aarch64", "arm64"} else "x86_64"
     else:
-        arch = "x86_64"
+        if platform.machine() in {"aarch64", "arm64"}:
+            # use arm64 unless explicitly specified
+            arch = "arm64" if instance_id not in USE_X86 else "x86_64"
+        else:
+            arch = "x86_64"
 
     return TestSpec(
         instance_id=instance_id,

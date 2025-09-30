@@ -324,7 +324,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--patch_folder", type=str)
     parser.add_argument("--target", type=str, default=None)
-    parser.add_argument("--num_samples", type=int, default=11)
+    parser.add_argument("--num_samples", type=int, default=8)
     parser.add_argument("--deduplicate", action="store_true")
     parser.add_argument("--regression", action="store_true")
     parser.add_argument("--reproduction", action="store_true")

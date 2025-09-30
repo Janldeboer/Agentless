@@ -37,12 +37,12 @@ print_usage() {
 DATASET="princeton-nlp/SWE-bench_Lite"
 TARGET_ID=""
 RESULTS_DIR=""
-THREADS=10
+THREADS=4
 REPAIR_THREADS=2
 TOP_N=3
 EDIT_LOC_SAMPLES=4
-REPAIR_SAMPLES=10
-REPRO_SAMPLES=40
+REPAIR_SAMPLES=4
+REPRO_SAMPLES=8
 PERSIST_DIR="embedding/swe-bench_simple"
 SKIP_EXISTING=1
 PROJECT_FILE_LOC_INPUT=""
@@ -181,16 +181,21 @@ PY
 }
 
 # Paths used across steps
-FILE_LEVEL_DIR="${RESULTS_DIR}/file_level"
-IRRELEVANT_DIR="${RESULTS_DIR}/file_level_irrelevant"
-RETRIEVAL_DIR="${RESULTS_DIR}/retrievel_embedding"
-COMBINED_DIR="${RESULTS_DIR}/file_level_combined"
-RELATED_DIR="${RESULTS_DIR}/related_elements"
-EDIT_SAMPLES_DIR="${RESULTS_DIR}/edit_location_samples"
-EDIT_INDIVIDUAL_DIR="${RESULTS_DIR}/edit_location_individual"
+FILE_LEVEL_DIR="${RESULTS_DIR}/step1_file_level"
+IRRELEVANT_DIR="${RESULTS_DIR}/step1_file_level_irrelevant"
+RETRIEVAL_DIR="${RESULTS_DIR}/step1_retrieval_embedding"
+COMBINED_DIR="${RESULTS_DIR}/step1_file_level_combined"
+RELATED_DIR="${RESULTS_DIR}/step2_related_elements"
+EDIT_SAMPLES_DIR="${RESULTS_DIR}/step3_edit_location_samples"
+EDIT_INDIVIDUAL_DIR="${RESULTS_DIR}/step3_edit_location_individual"
+SELECT_REGRESSION_DIR="${RESULTS_DIR}/step5_select_regression"
+# Prefix for per-sample repair output folders (e.g., repair_sample_1, repair_sample_2, ...)
+REPAIR_SAMPLE_DIR_PREFIX="${RESULTS_DIR}/step4_repair_sample_"
+REPRODUCTION_TEST_SAMPLES_DIR="${RESULTS_DIR}/step6_reproduction_test_samples"
 
 mkdir -p "${FILE_LEVEL_DIR}" "${IRRELEVANT_DIR}" "${RETRIEVAL_DIR}" \
-         "${COMBINED_DIR}" "${RELATED_DIR}" "${EDIT_SAMPLES_DIR}" "${EDIT_INDIVIDUAL_DIR}"
+         "${COMBINED_DIR}" "${RELATED_DIR}" "${EDIT_SAMPLES_DIR}" "${EDIT_INDIVIDUAL_DIR}" \
+         "${SELECT_REGRESSION_DIR}" "${REPRODUCTION_TEST_SAMPLES_DIR}"
 
 info "Dataset=${DATASET}; Results dir=${RESULTS_DIR}; Target ID='${TARGET_ID}'"
 info "PROJECT_FILE_LOC='${PROJECT_FILE_LOC}'"
@@ -284,7 +289,7 @@ for ((i=0; i<EDIT_LOC_SAMPLES; i++)); do
   idx=$i
   num=$((i+1))
   LOC_FILE="${EDIT_INDIVIDUAL_DIR}/loc_merged_${idx}-${idx}_outputs.jsonl"
-  REPAIR_DIR="${RESULTS_DIR}/repair_sample_${num}"
+  REPAIR_DIR="${REPAIR_SAMPLE_DIR_PREFIX}${num}"
   mkdir -p "${REPAIR_DIR}"
 
   run python agentless/repair/repair.py \
@@ -316,7 +321,7 @@ run python agentless/test/run_regression_tests.py \
 info "Step 5.2: LLM-assisted selection of regression tests"
 run python agentless/test/select_regression_tests.py \
   --passing_tests "${RESULTS_DIR}/passing_tests.jsonl" \
-  --output_folder "${RESULTS_DIR}/select_regression" \
+  --output_folder "${SELECT_REGRESSION_DIR}" \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
   ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
 
@@ -324,10 +329,10 @@ info "Step 5.3: Run selected regression tests against each candidate patch"
 check_docker
 for num in $(seq 0 $((REPAIR_SAMPLES-1))); do
   for sample in $(seq 1 ${EDIT_LOC_SAMPLES}); do
-    folder="${RESULTS_DIR}/repair_sample_${sample}"
+    folder="${REPAIR_SAMPLE_DIR_PREFIX}${sample}"
     run_id_prefix="$(basename "$folder")"
     run python agentless/test/run_regression_tests.py \
-      --regression_tests "${RESULTS_DIR}/select_regression/output.jsonl" \
+      --regression_tests "${SELECT_REGRESSION_DIR}/output.jsonl" \
       --predictions_path="${folder}/output_${num}_processed.jsonl" \
       --run_id="${run_id_prefix}_regression_${num}" \
       --num_workers "${THREADS}" \
@@ -342,7 +347,7 @@ done
 info "Step 6.1: Generate reproduction tests (${REPRO_SAMPLES} samples)"
 run python agentless/test/generate_reproduction_tests.py \
   --max_samples "${REPRO_SAMPLES}" \
-  --output_folder "${RESULTS_DIR}/reproduction_test_samples" \
+  --output_folder "${REPRODUCTION_TEST_SAMPLES_DIR}" \
   --num_threads "${THREADS}" \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
   ${TARGET_ID_FLAG[@]+"${TARGET_ID_FLAG[@]}"}
@@ -352,7 +357,7 @@ check_docker
 for num in $(seq 0 $((REPRO_SAMPLES-1))); do
   run python agentless/test/run_reproduction_tests.py \
     --run_id="reproduction_test_generation_filter_sample_${num}" \
-    --test_jsonl="${RESULTS_DIR}/reproduction_test_samples/output_${num}_processed_reproduction_test.jsonl" \
+    --test_jsonl="${REPRODUCTION_TEST_SAMPLES_DIR}/output_${num}_processed_reproduction_test.jsonl" \
     --num_workers "${THREADS}" \
     --testing \
     ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
@@ -362,7 +367,7 @@ done
 info "Step 6.3: Majority vote selection of reproduction tests"
 run python agentless/test/generate_reproduction_tests.py \
   --max_samples "${REPRO_SAMPLES}" \
-  --output_folder "${RESULTS_DIR}/reproduction_test_samples" \
+  --output_folder "${REPRODUCTION_TEST_SAMPLES_DIR}" \
   --output_file reproduction_tests.jsonl \
   --select \
   ${DATASET_FLAG[@]+"${DATASET_FLAG[@]}"} \
@@ -372,10 +377,10 @@ info "Step 6.4: Run selected reproduction tests against each candidate patch"
 check_docker
 for num in $(seq 0 $((REPAIR_SAMPLES-1))); do
   for sample in $(seq 1 ${EDIT_LOC_SAMPLES}); do
-    folder="${RESULTS_DIR}/repair_sample_${sample}"
+    folder="${REPAIR_SAMPLE_DIR_PREFIX}${sample}"
     run_id_prefix="$(basename "$folder")"
     run python agentless/test/run_reproduction_tests.py \
-      --test_jsonl "${RESULTS_DIR}/reproduction_test_samples/reproduction_tests.jsonl" \
+      --test_jsonl "${REPRODUCTION_TEST_SAMPLES_DIR}/reproduction_tests.jsonl" \
       --predictions_path="${folder}/output_${num}_processed.jsonl" \
       --run_id="${run_id_prefix}_reproduction_${num}" \
       --num_workers "${THREADS}" \
@@ -390,7 +395,7 @@ done
 info "Step 7: Rerank and select final patches"
 PATCH_FOLDERS=()
 for sample in $(seq 1 ${EDIT_LOC_SAMPLES}); do
-  PATCH_FOLDERS+=("${RESULTS_DIR}/repair_sample_${sample}/")
+  PATCH_FOLDERS+=("${REPAIR_SAMPLE_DIR_PREFIX}${sample}/")
 done
 
 IFS="," read -r -a PATCH_FOLDERS_CSV <<< "$(printf "%s," "${PATCH_FOLDERS[@]}")"

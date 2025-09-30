@@ -30,26 +30,29 @@ def create_chatgpt_config(
     batch_size: int = 1,
     system_message: str = "You are a helpful assistant.",
     model: str = "gpt-5-mini-2025-08-07",
+    reasoning_effort: str = "minimal"
 ) -> Dict:
     if isinstance(message, list):
         config = {
             "model": model,
             "max_completion_tokens": max_tokens,
-            #"temperature": temperature,
             "n": batch_size,
+            "reasoning_effort": reasoning_effort,
             "messages": [{"role": "system", "content": system_message}] + message,
         }
     else:
         config = {
             "model": model,
             "max_completion_tokens": max_tokens,
-            #"temperature": temperature,
             "n": batch_size,
+            "reasoning_effort": reasoning_effort,
             "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": message},
             ],
         }
+
+    # Avoid adding model-specific reasoning fields to chat.completions request, as not all SDKs support them.
     return config
 
 
@@ -105,6 +108,32 @@ def request_chatgpt_engine(config, logger, base_url=None, max_retries=40, timeou
         retries += 1
 
     logger.info(f"API response {ret}")
+    # Auto-retry once with a higher token budget if the model consumed all tokens for reasoning and returned empty content.
+    try:
+        if (
+            ret
+            and getattr(ret, "choices", None)
+            and len(ret.choices) > 0
+            and (ret.choices[0].message.content is None or ret.choices[0].message.content == "")
+        ):
+            # Check if we hit the token ceiling purely on reasoning tokens
+            details = getattr(getattr(ret, "usage", None), "completion_tokens_details", None)
+            reasoning_tokens = getattr(details, "reasoning_tokens", None)
+            accepted_pred = getattr(details, "accepted_prediction_tokens", None)
+            # Get the configured cap
+            cap = config.get("max_tokens") or config.get("max_completion_tokens")
+            if cap and reasoning_tokens and (accepted_pred in (0, None)):
+                logger.info("Empty content likely due to reasoning tokens exhausting the budget; retrying with higher max tokens...")
+                bumped = int(cap) + max(512, int(cap) // 2)
+                # Update config with larger token limits and lower reasoning effort
+                config["max_tokens"] = bumped
+                config["max_completion_tokens"] = bumped
+                _sleep_if_needed_for_openai_cooldown(logger)
+                ret = client.chat.completions.create(**config)
+                logger.info(f"API response (retry with bumped tokens) {ret}")
+    except Exception:
+        # Be conservative; any parsing error here should not break the flow.
+        pass
     return ret
 
 

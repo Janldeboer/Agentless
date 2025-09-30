@@ -235,7 +235,7 @@ Return just the locations wrapped with ```.
         **kwargs,
     ):
         super().__init__(instance_id, structure, problem_statement)
-        self.max_tokens = 300
+        self.max_tokens = 10000
         self.model_name = model_name
         self.backend = backend
         self.logger = logger
@@ -462,6 +462,9 @@ Return just the locations wrapped with ```.
         raw_output = traj["response"]
 
         model_found_locs = extract_code_blocks(raw_output)
+        # Fallback: if the model didn't use code fences, treat the whole output as one block
+        if not model_found_locs and raw_output and raw_output.strip():
+            model_found_locs = [raw_output]
         model_found_locs_separated = extract_locs_for_files(
             model_found_locs, file_names, keep_old_order
         )
@@ -546,6 +549,8 @@ Return just the locations wrapped with ```.
         raw_output = traj["response"]
 
         model_found_locs = extract_code_blocks(raw_output)
+        if not model_found_locs and raw_output and raw_output.strip():
+            model_found_locs = [raw_output]
         model_found_locs_separated = extract_locs_for_files(
             model_found_locs, file_names, keep_old_order
         )
@@ -665,6 +670,8 @@ Return just the locations wrapped with ```.
         model_found_locs_separated_in_samples = []
         for raw_output in raw_outputs:
             model_found_locs = extract_code_blocks(raw_output)
+            if not model_found_locs and raw_output and raw_output.strip():
+                model_found_locs = [raw_output]
             model_found_locs_separated = extract_locs_for_files(
                 model_found_locs, file_names, keep_old_order
             )
@@ -784,6 +791,8 @@ Return just the locations wrapped with ```.
         model_found_locs_separated_in_samples = []
         for raw_output in raw_outputs:
             model_found_locs = extract_code_blocks(raw_output)
+            if not model_found_locs and raw_output and raw_output.strip():
+                model_found_locs = [raw_output]
             model_found_locs_separated = extract_locs_for_files(
                 model_found_locs, file_names, keep_old_order
             )

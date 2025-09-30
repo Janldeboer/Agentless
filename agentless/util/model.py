@@ -54,6 +54,12 @@ class OpenAIChatDecoder(DecoderBase):
             assert num_samples == 1
         batch_size = min(self.batch_size, num_samples)
 
+        if batch_size > 8:
+            self.logger.warning(
+                f"Batch size {batch_size} is too large for OpenAI API, capping to 8."
+            )
+            batch_size = 8
+
         config = create_chatgpt_config(
             message=message,
             max_tokens=self.max_new_tokens,
@@ -63,13 +69,28 @@ class OpenAIChatDecoder(DecoderBase):
         )
         ret = request_chatgpt_engine(config, self.logger)
         if ret:
-            responses = [choice.message.content for choice in ret.choices]
+            responses = [
+                (choice.message.content or "") if getattr(choice, "message", None) else ""
+                for choice in ret.choices
+            ]
+            # If all responses are empty, abort to avoid silent failures downstream.
+            if all((resp is None) or (str(resp).strip() == "") for resp in responses):
+                try:
+                    details = getattr(getattr(ret, "usage", None), "completion_tokens_details", None)
+                    reasoning_tokens = getattr(details, "reasoning_tokens", None) if details else None
+                except Exception:
+                    reasoning_tokens = None
+                self.logger.error(
+                    "Model returned empty content. This often happens when reasoning tokens exhaust the budget. Aborting this run."
+                    + (f" reasoning_tokens={reasoning_tokens}" if reasoning_tokens is not None else "")
+                )
+                raise RuntimeError("LLM returned empty content (no answer). Aborting.")
             completion_tokens = ret.usage.completion_tokens
             prompt_tokens = ret.usage.prompt_tokens
         else:
-            responses = [""]
-            completion_tokens = 0
-            prompt_tokens = 0
+            # No response at all from API; abort immediately.
+            self.logger.error("No response received from OpenAI API. Aborting this run.")
+            raise RuntimeError("No response received from OpenAI API.")
 
         # The nice thing is, when we generate multiple samples from the same input (message),
         # the input tokens are only charged once according to openai API.
@@ -303,9 +324,14 @@ Notes for using the `str_replace` command:
             )
 
             if ret:
+                # If the SDK returns content but it is empty, abort.
+                txt = ret.content[0].text if (ret.content and hasattr(ret.content[0], "text")) else ""
+                if not txt or not str(txt).strip():
+                    self.logger.error("Anthropic model returned empty content. Aborting this run.")
+                    raise RuntimeError("LLM returned empty content (no answer). Aborting.")
                 trajs.append(
                     {
-                        "response": ret.content[0].text,
+                        "response": txt,
                         "usage": {
                             "completion_tokens": ret.usage.output_tokens,
                             "prompt_tokens": ret.usage.input_tokens,
@@ -319,15 +345,8 @@ Notes for using the `str_replace` command:
                     }
                 )
             else:
-                trajs.append(
-                    {
-                        "response": "",
-                        "usage": {
-                            "completion_tokens": 0,
-                            "prompt_tokens": 0,
-                        },
-                    }
-                )
+                self.logger.error("No response received from Anthropic API. Aborting this run.")
+                raise RuntimeError("No response received from Anthropic API.")
 
         return trajs
 
@@ -367,16 +386,13 @@ class DeepSeekChatDecoder(DecoderBase):
                         },
                     }
                 )
+                # Abort if empty content
+                if not trajs[-1]["response"] or not str(trajs[-1]["response"]).strip():
+                    self.logger.error("DeepSeek model returned empty content. Aborting this run.")
+                    raise RuntimeError("LLM returned empty content (no answer). Aborting.")
             else:
-                trajs.append(
-                    {
-                        "response": "",
-                        "usage": {
-                            "completion_tokens": 0,
-                            "prompt_tokens": 0,
-                        },
-                    }
-                )
+                self.logger.error("No response received from DeepSeek API. Aborting this run.")
+                raise RuntimeError("No response received from DeepSeek API.")
 
         return trajs
 
